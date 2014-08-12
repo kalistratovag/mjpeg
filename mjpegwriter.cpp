@@ -1,219 +1,360 @@
-
 #include "mjpegwriter.hpp"
-#include "opencv2/core/utility.hpp"
-#include <smmintrin.h>
+#include "opencv2/core/core.hpp"
 
-namespace jcodec
+namespace cv
+{
+namespace mjpeg
 {
 
-#define SSE 1
-#define fourCC(a,b,c,d) ( (int) ((uchar(d)<<24) | (uchar(c)<<16) | (uchar(b)<<8) | uchar(a)) )
-#define DIM(arr) (sizeof(arr)/sizeof(arr[0]))
-#define BSWAP(v)    (((v)<<24)|(((v)&0xff00)<<8)| \
-    (((v) >> 8) & 0xff00) | ((unsigned)(v) >> 24))
-#define DCT_DESCALE(x, n) (((x) + (((int)1) << ((n) - 1))) >> (n)) 
+#define BSWAP(v)    (((v)<<24)|(((v)&0xff00)<<8)|(((v) >> 8) & 0xff00) | ((unsigned)(v) >> 24))
+#define DCT_DESCALE(x, n) (((x) + (((int)1) << ((n) - 1))) >> (n))
 #define fix(x, n)   (int)((x)*(1 << (n)) + .5);
-#define fix1(x, n)  (x)
-#define fixmul(x)   (x)
 
-    static const float NUM_MICROSEC_PER_SEC = 1000000.0f;
-    static const int STREAMS = 1;
-    static const int AVIH_STRH_SIZE = 56;
-    static const int STRF_SIZE = 40;
-    static const int AVI_DWFLAG = 0x00000910;
-    static const int AVI_DWSCALE = 1;
-    static const int AVI_DWQUALITY = -1;
-    static const int AVI_BITS_PER_PIXEL = 24;
-    static const int AVI_BIPLANES = 1;
-    static const int JUNK_SEEK = 4096;
-    static const int AVIIF_KEYFRAME = 0x10;
-    static const int MAX_BYTES_PER_SEC = 15552000;
-    static const int SUG_BUFFER_SIZE = 1048576;
-    static const int RBS_THROW_EOS = -123;  /* <end of stream> exception code */
-    static const int RBS_THROW_FORB = -124;  /* <forrbidden huffman code> exception code */
-    static const int RBS_HUFF_FORB = 2047;  /* forrbidden huffman code "value" */
-    static const int fixb = 14;
+static const float NUM_MICROSEC_PER_SEC = 1000000.0f;
+static const int STREAMS = 1;
+static const int AVIH_STRH_SIZE = 56;
+static const int STRF_SIZE = 40;
+static const int AVI_DWFLAG = 0x00000910;
+static const int AVI_DWSCALE = 1;
+static const int AVI_DWQUALITY = -1;
+static const int AVI_BITS_PER_PIXEL = 24;
+static const int AVI_BIPLANES = 1;
+static const int JUNK_SEEK = 4096;
+static const int AVIIF_KEYFRAME = 0x10;
+static const int MAX_BYTES_PER_SEC = 15552000;
+static const int SUG_BUFFER_SIZE = 1048576;
+static const int RBS_THROW_EOS = -123;  /* <end of stream> exception code */
+static const int RBS_THROW_FORB = -124;  /* <forrbidden huffman code> exception code */
+static const int RBS_HUFF_FORB = 2047;  /* forrbidden huffman code "value" */
 
-    static const int C0_707 = fix(0.707106781f, fixb);
-    static const int C0_924 = fix(0.923879533f, fixb);
-    static const int C0_541 = fix(0.541196100f, fixb);
-    static const int C0_382 = fix(0.382683432f, fixb);
-    static const int C1_306 = fix(1.306562965f, fixb);
+static const int fixb = 14;
+static const int C0_707 = fix(0.707106781f, fixb);
+static const int C0_924 = fix(0.923879533f, fixb);
+static const int C0_541 = fix(0.541196100f, fixb);
+static const int C0_382 = fix(0.382683432f, fixb);
+static const int C1_306 = fix(1.306562965f, fixb);
 
-    static const int C1_082 = fix(1.082392200f, fixb);
-    static const int C1_414 = fix(1.414213562f, fixb);
-    static const int C1_847 = fix(1.847759065f, fixb);
-    static const int C2_613 = fix(2.613125930f, fixb);
+/*static const int C1_082 = fix(1.082392200f, fixb);
+static const int C1_414 = fix(1.414213562f, fixb);
+static const int C1_847 = fix(1.847759065f, fixb);
+static const int C2_613 = fix(2.613125930f, fixb);*/
 
-    static const int fixc = 12;
-    static const int b_cb = fix(1.772, fixc);
-    static const int g_cb = -fix(0.34414, fixc);
-    static const int g_cr = -fix(0.71414, fixc);
-    static const int r_cr = fix(1.402, fixc);
+static const int fixc = 12;
+static const int b_cb = fix(1.772, fixc);
+static const int g_cb = -fix(0.34414, fixc);
+static const int g_cr = -fix(0.71414, fixc);
+static const int r_cr = fix(1.402, fixc);
 
-    static const int y_r = fix(0.299, fixc);
-    static const int y_g = fix(0.587, fixc);
-    static const int y_b = fix(0.114, fixc);
+static const int y_r = fix(0.299, fixc);
+static const int y_g = fix(0.587, fixc);
+static const int y_b = fix(0.114, fixc);
 
-    static const int cb_r = -fix(0.1687, fixc);
-    static const int cb_g = -fix(0.3313, fixc);
-    static const int cb_b = fix(0.5, fixc);
+static const int cb_r = -fix(0.1687, fixc);
+static const int cb_g = -fix(0.3313, fixc);
+static const int cb_b = fix(0.5, fixc);
 
-    static const int cr_r = fix(0.5, fixc);
-    static const int cr_g = -fix(0.4187, fixc);
-    static const int cr_b = -fix(0.0813, fixc);
+static const int cr_r = fix(0.5, fixc);
+static const int cr_g = -fix(0.4187, fixc);
+static const int cr_b = -fix(0.0813, fixc);
 
-    static const int huff_val_shift = 20, huff_code_mask = (1 << huff_val_shift) - 1;
-    static const int postshift = 14;
+static const int huff_val_shift = 20, huff_code_mask = (1 << huff_val_shift) - 1;
+static const int postshift = 14;
 
-    static uchar clamp_table[1024];
-    static bool init_clamp_table = false;
+static uchar clamp_table[1024];
+static bool init_clamp_table = false;
 
-    static inline uchar clamp(int i) { if (static_cast<uint>(i) > 255U) { i = clamp_table[(i)+256]; } return static_cast<uchar>(i); }
+#define clamp(i) clamp_table[(i)+256]
 
-    static const int BITS = 10, SCALE = 1 << BITS;
-    static const float MAX_M = (float)(1 << (15 - BITS));
-    static const short m00 = static_cast<short>(-0.0813f * SCALE), m01 = static_cast<short>(-0.4187f * SCALE),
-        m02 = static_cast<short>(0.5f * SCALE), m10 = static_cast<short>(0.5f * SCALE),
-        m11 = static_cast<short>(-0.3313f * SCALE), m12 = static_cast<short>(-0.1687f * SCALE),
-        m20 = static_cast<short>(0.114f * SCALE), m21 = static_cast<short>(0.587f  * SCALE),
-        m22 = static_cast<short>(0.299f * SCALE), Hm03 = static_cast<int>(0.5f * SCALE),
-        Hm13 = static_cast<int>(0.5f * SCALE), Hm23 = static_cast<int>(0.5f * SCALE),
-        Hm = static_cast<int>(0.5f * SCALE);
+//static const int BITS = 10, SCALE = 1 << BITS;
+//static const float MAX_M = (float)(1 << (15 - BITS));
 
-    //  Standard JPEG quantization tables
-    static const uchar jpegTableK1_T[] =
+//  Standard JPEG quantization tables
+static const uchar jpegTableK1_T[] =
+{
+    16, 12, 14, 14, 18, 24, 49, 72,
+    11, 12, 13, 17, 22, 35, 64, 92,
+    10, 14, 16, 22, 37, 55, 78, 95,
+    16, 19, 24, 29, 56, 64, 87, 98,
+    24, 26, 40, 51, 68, 81, 103, 112,
+    40, 58, 57, 87, 109, 104, 121, 100,
+    51, 60, 69, 80, 103, 113, 120, 103,
+    61, 55, 56, 62, 77, 92, 101, 99
+};
+
+static const uchar jpegTableK2_T[] =
+{
+    17, 18, 24, 47, 99, 99, 99, 99,
+    18, 21, 26, 66, 99, 99, 99, 99,
+    24, 26, 56, 99, 99, 99, 99, 99,
+    47, 66, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99
+};
+
+// Standard Huffman tables
+
+// ... for luma DCs.
+static const uchar jpegTableK3[] =
+{
+    0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
+};
+
+// ... for chroma DCs.
+static const uchar jpegTableK4[] =
+{
+    0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
+};
+
+// ... for luma ACs.
+static const uchar jpegTableK5[] =
+{
+    0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 125,
+    0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12,
+    0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07,
+    0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xa1, 0x08,
+    0x23, 0x42, 0xb1, 0xc1, 0x15, 0x52, 0xd1, 0xf0,
+    0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0a, 0x16,
+    0x17, 0x18, 0x19, 0x1a, 0x25, 0x26, 0x27, 0x28,
+    0x29, 0x2a, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
+    0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49,
+    0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59,
+    0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69,
+    0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79,
+    0x7a, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
+    0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98,
+    0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
+    0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6,
+    0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5,
+    0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2, 0xd3, 0xd4,
+    0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe1, 0xe2,
+    0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea,
+    0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8,
+    0xf9, 0xfa
+};
+
+// ... for chroma ACs
+static const uchar jpegTableK6[] =
+{
+    0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 119,
+    0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21,
+    0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71,
+    0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91,
+    0xa1, 0xb1, 0xc1, 0x09, 0x23, 0x33, 0x52, 0xf0,
+    0x15, 0x62, 0x72, 0xd1, 0x0a, 0x16, 0x24, 0x34,
+    0xe1, 0x25, 0xf1, 0x17, 0x18, 0x19, 0x1a, 0x26,
+    0x27, 0x28, 0x29, 0x2a, 0x35, 0x36, 0x37, 0x38,
+    0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
+    0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58,
+    0x59, 0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68,
+    0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78,
+    0x79, 0x7a, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+    0x88, 0x89, 0x8a, 0x92, 0x93, 0x94, 0x95, 0x96,
+    0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5,
+    0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4,
+    0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3,
+    0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2,
+    0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda,
+    0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9,
+    0xea, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8,
+    0xf9, 0xfa
+};
+
+static const uchar zigzag[] =
+{
+    0, 8, 1, 2, 9, 16, 24, 17, 10, 3, 4, 11, 18, 25, 32, 40,
+    33, 26, 19, 12, 5, 6, 13, 20, 27, 34, 41, 48, 56, 49, 42, 35,
+    28, 21, 14, 7, 15, 22, 29, 36, 43, 50, 57, 58, 51, 44, 37, 30,
+    23, 31, 38, 45, 52, 59, 60, 53, 46, 39, 47, 54, 61, 62, 55, 63,
+    63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63
+};
+
+static const int idct_prescale[] =
+{
+    16384, 22725, 21407, 19266, 16384, 12873, 8867, 4520,
+    22725, 31521, 29692, 26722, 22725, 17855, 12299, 6270,
+    21407, 29692, 27969, 25172, 21407, 16819, 11585, 5906,
+    19266, 26722, 25172, 22654, 19266, 15137, 10426, 5315,
+    16384, 22725, 21407, 19266, 16384, 12873, 8867, 4520,
+    12873, 17855, 16819, 15137, 12873, 10114, 6967, 3552,
+    8867, 12299, 11585, 10426, 8867, 6967, 4799, 2446,
+    4520, 6270, 5906, 5315, 4520, 3552, 2446, 1247
+};
+
+static const char jpegHeader[] =
+"\xFF\xD8"  // SOI  - start of image
+"\xFF\xE0"  // APP0 - jfif extention
+"\x00\x10"  // 2 bytes: length of APP0 segment
+"JFIF\x00"  // JFIF signature
+"\x01\x02"  // version of JFIF
+"\x00"      // units = pixels ( 1 - inch, 2 - cm )
+"\x00\x01\x00\x01" // 2 2-bytes values: x density & y density
+"\x00\x00"; // width & height of thumbnail: ( 0x0 means no thumbnail)
+
+
+MJpegWriter::~MJpegWriter() {}
+
+class MJpegWriterImpl
+{
+public:
+    MJpegWriterImpl() {}
+    MJpegWriterImpl(const std::string& filename, Size size, double fps)
     {
-        16, 12, 14, 14, 18, 24, 49, 72,
-        11, 12, 13, 17, 22, 35, 64, 92,
-        10, 14, 16, 22, 37, 55, 78, 95,
-        16, 19, 24, 29, 56, 64, 87, 98,
-        24, 26, 40, 51, 68, 81, 103, 112,
-        40, 58, 57, 87, 109, 104, 121, 100,
-        51, 60, 69, 80, 103, 113, 120, 103,
-        61, 55, 56, 62, 77, 92, 101, 99
-    };
+        open(filename, size, fps);
+    }
+    ~MJpegWriterImpl() { close(); }
 
-    static const uchar jpegTableK2_T[] =
-    {
-        17, 18, 24, 47, 99, 99, 99, 99,
-        18, 21, 26, 66, 99, 99, 99, 99,
-        24, 26, 56, 99, 99, 99, 99, 99,
-        47, 66, 99, 99, 99, 99, 99, 99,
-        99, 99, 99, 99, 99, 99, 99, 99,
-        99, 99, 99, 99, 99, 99, 99, 99,
-        99, 99, 99, 99, 99, 99, 99, 99,
-        99, 99, 99, 99, 99, 99, 99, 99
-    };
+    void write(const Mat& img);
+    void close();
+    bool open(const std::string& filename, Size size, double fps);
+    bool isOpened() const { return strm.isOpened(); }
 
-    // Standard Huffman tables
+protected:
+    int nchunks;
+    double tencoding;
+    int outformat;
+    int quality;
+    double outfps;
+    int width, height;
+    int type;
+    int nframes;
+    int chunkPointer, moviPointer;
+    vector<int> frameOffset, frameSize, AVIChunkSizeIndex, frameNumIndexes;
 
-    // ... for luma DCs.
-    static const uchar jpegTableK3[] =
-    {
-        0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0,
-        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
-    };
+    int toJPGframe(const uchar* data, int step, Size size, void *& pBuf);
+    void startWriteAVI();
+    void writeStreamHeader();
+    void writeIndex();
+    bool writeFrame(const Mat & Im);
+    void writeODMLIndex();
+    void finishWriteAVI();
+    void putInt(int elem);
+    void putShort(short elem);
+    void startWriteChunk(int fourcc);
+    void endWriteChunk();
+};
 
-    // ... for chroma DCs.
-    static const uchar jpegTableK4[] =
-    {
-        0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0,
-        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
-    };
 
-    // ... for luma ACs.
-    static const uchar jpegTableK5[] =
-    {
-        0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 125,
-        0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12,
-        0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07,
-        0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xa1, 0x08,
-        0x23, 0x42, 0xb1, 0xc1, 0x15, 0x52, 0xd1, 0xf0,
-        0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0a, 0x16,
-        0x17, 0x18, 0x19, 0x1a, 0x25, 0x26, 0x27, 0x28,
-        0x29, 0x2a, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
-        0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49,
-        0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59,
-        0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69,
-        0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79,
-        0x7a, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
-        0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98,
-        0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
-        0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6,
-        0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5,
-        0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2, 0xd3, 0xd4,
-        0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe1, 0xe2,
-        0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea,
-        0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8,
-        0xf9, 0xfa
-    };
+// WBaseStream - base class for output streams
+class WBaseStream
+{
+public:
+    //methods
+    WBaseStream();
+    virtual ~WBaseStream();
 
-    // ... for chroma ACs  
-    static const uchar jpegTableK6[] =
-    {
-        0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 119,
-        0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21,
-        0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71,
-        0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91,
-        0xa1, 0xb1, 0xc1, 0x09, 0x23, 0x33, 0x52, 0xf0,
-        0x15, 0x62, 0x72, 0xd1, 0x0a, 0x16, 0x24, 0x34,
-        0xe1, 0x25, 0xf1, 0x17, 0x18, 0x19, 0x1a, 0x26,
-        0x27, 0x28, 0x29, 0x2a, 0x35, 0x36, 0x37, 0x38,
-        0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
-        0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58,
-        0x59, 0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68,
-        0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78,
-        0x79, 0x7a, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
-        0x88, 0x89, 0x8a, 0x92, 0x93, 0x94, 0x95, 0x96,
-        0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5,
-        0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4,
-        0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3,
-        0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2,
-        0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda,
-        0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9,
-        0xea, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8,
-        0xf9, 0xfa
-    };
+    virtual bool  Open(output_stream *stream);
+    virtual void  Close();
+    void          SetBlockSize(int block_size);
+    bool          IsOpened();
+    int           GetPos();
 
-    static const uchar zigzag[] =
-    {
-        0, 8, 1, 2, 9, 16, 24, 17, 10, 3, 4, 11, 18, 25, 32, 40,
-        33, 26, 19, 12, 5, 6, 13, 20, 27, 34, 41, 48, 56, 49, 42, 35,
-        28, 21, 14, 7, 15, 22, 29, 36, 43, 50, 57, 58, 51, 44, 37, 30,
-        23, 31, 38, 45, 52, 59, 60, 53, 46, 39, 47, 54, 61, 62, 55, 63,
-        63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63
-    };
+protected:
 
-    static const uchar SSE_zigzag[] =
-    {
-        0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5,
-        12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28,
-        35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
-        58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
-        63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63
-    };
-    static const int idct_prescale[] =
-    {
-        16384, 22725, 21407, 19266, 16384, 12873, 8867, 4520,
-        22725, 31521, 29692, 26722, 22725, 17855, 12299, 6270,
-        21407, 29692, 27969, 25172, 21407, 16819, 11585, 5906,
-        19266, 26722, 25172, 22654, 19266, 15137, 10426, 5315,
-        16384, 22725, 21407, 19266, 16384, 12873, 8867, 4520,
-        12873, 17855, 16819, 15137, 12873, 10114, 6967, 3552,
-        8867, 12299, 11585, 10426, 8867, 6967, 4799, 2446,
-        4520, 6270, 5906, 5315, 4520, 3552, 2446, 1247
-    };
+    uchar*  m_start;
+    uchar*  m_end;
+    uchar*  m_current;
+    int     m_block_size;
+    int     m_block_pos;
+    output_stream*   m_stream;
+    bool    m_is_opened;
 
-    static const char jpegHeader[] =
-        "\xFF\xD8"  // SOI  - start of image
-        "\xFF\xE0"  // APP0 - jfif extention
-        "\x00\x10"  // 2 bytes: length of APP0 segment
-        "JFIF\x00"  // JFIF signature
-        "\x01\x02"  // version of JFIF
-        "\x00"      // units = pixels ( 1 - inch, 2 - cm )
-        "\x00\x01\x00\x01" // 2 2-bytes values: x density & y density
-        "\x00\x00"; // width & height of thumbnail: ( 0x0 means no thumbnail)
+    virtual void  WriteBlock();
+    virtual void  Release();
+    virtual void  Allocate();
+};
+
+
+// class WLByteStream - uchar-oriented stream.
+// l in prefix means that the least significant uchar of a multi-byte value goes first
+class WLByteStream : public WBaseStream
+{
+public:
+    virtual ~WLByteStream();
+
+    void    PutByte(int val);
+    void    PutBytes(const void* buffer, int count);
+    void    PutWord(int val);
+    void    PutDWord(int val);
+};
+
+// class WLByteStream - uchar-oriented stream.
+// m in prefix means that the least significant uchar of a multi-byte value goes last
+class WMByteStream : public WLByteStream
+{
+public:
+    virtual ~WMByteStream();
+
+    void    PutWord(int val);
+    void    PutDWord(int val);
+};
+
+// class WLBitStream - bit-oriented stream.
+// l in prefix means that the least significant bit of a multi-bit value goes first
+class WLBitStream : public WBaseStream
+{
+public:
+    virtual ~WLBitStream();
+
+    int     GetPos();
+    void    Put(int val, int bits);
+    void    PutHuff(int val, const int* table);
+
+protected:
+    int     m_bit_idx;
+    int     m_val;
+    virtual void  WriteBlock();
+};
+
+
+// class WMBitStream - bit-oriented stream.
+// l in prefix means that the least significant bit of a multi-bit value goes first
+class WMBitStream : public WBaseStream
+{
+public:
+    WMBitStream();
+    virtual ~WMBitStream();
+
+    bool    Open(output_stream *stream);
+    void    Close();
+    virtual void  Flush();
+
+    int     GetPos();
+    void    Put(int val, int bits);
+    void    PutHuff(int val, const ulong* table);
+
+protected:
+    int     m_bit_idx;
+    ulong   m_pad_val;
+    ulong   m_val;
+    virtual void  WriteBlock();
+    void    ResetBuffer();
+};
+
+int* bsCreateSourceHuffmanTable(const uchar* src, int* dst,
+                                int max_bits, int first_bits);
+bool bsCreateDecodeHuffmanTable(const int* src, short* dst, int max_size);
+bool bsCreateEncodeHuffmanTable(const int* src, ulong* dst, int max_size);
+
+class WJpegBitStream : public WMBitStream
+{
+public:
+    WMByteStream  m_low_strm;
+
+    WJpegBitStream();
+    ~WJpegBitStream();
+
+    virtual void  Flush();
+    virtual bool  Open(output_stream *stream);
+    virtual void  Close();
+
+protected:
+    virtual void  WriteBlock();
+};
+
 
     /////////////////////// MjpegWriter ///////////////////
 
@@ -1935,4 +2076,5 @@ namespace jcodec
 
         m_current = m_start;
     }
+}
 }
