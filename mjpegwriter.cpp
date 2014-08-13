@@ -1,5 +1,6 @@
 #include "mjpegwriter.hpp"
 #include "opencv2/core/core.hpp"
+#include "opencv2/core/utility.hpp"
 #include <vector>
 
 namespace cv
@@ -189,7 +190,7 @@ public:
         int bit_idx = m_bit_idx - bits;
         unsigned currval = m_val;
 
-        CV_Assert(0 <= bits && bits < 32);
+        //CV_Assert(0 <= bits && bits < 32);
         val &= bit_mask[bits];
 
         if( bit_idx > 0 )
@@ -229,14 +230,7 @@ public:
 
     void jputHuff(int val, const unsigned* table)
     {
-        int min_val = (int)table[0];
-        val -= min_val;
-
-        CV_Assert((unsigned)val < table[1]);
-
         unsigned code = table[val + 2];
-        CV_Assert(code != 0);
-
         jputBits(code >> 8, code & 255);
     }
 
@@ -837,6 +831,20 @@ static void aan_fdct8x8( const short *src, short *dst,
 void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
                                       int width, int height, int input_channels )
 {
+    static bool init_cat_table = false;
+    const int CAT_TAB_SIZE = 4096;
+    static uchar cat_table[CAT_TAB_SIZE*2+1];
+    if( !init_cat_table )
+    {
+        for( int i = -CAT_TAB_SIZE; i < CAT_TAB_SIZE; i++ )
+        {
+            float a = (float)i;
+            cat_table[i+CAT_TAB_SIZE] = (((int&)a >> 23) & 255) - (126 & (i ? -1 : 0));
+        }
+        init_cat_table = true;
+    }
+
+    //double total_dct = 0, total_cvt = 0;
     CV_Assert( data && width > 0 && height > 0 );
 
     // encode the header and tables
@@ -847,8 +855,8 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
     //     encode block.
     int x, y;
     int i, j;
-    const int max_quality = 7;
-    int   quality = max_quality;
+    const int max_quality = 12;
+    int   quality = 2;
     short fdct_qtab[2][64];
     unsigned huff_dc_tab[2][16];
     unsigned huff_ac_tab[2][256];
@@ -865,7 +873,7 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
     const int UV_step = 16;
     double inv_quality;
 
-    if( quality < 3 ) quality = 3;
+    if( quality < 1 ) quality = 1;
     if( quality > max_quality ) quality = max_quality;
 
     inv_quality = 1./quality;
@@ -970,6 +978,7 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
             if( channels > 1 )
             {
                 short* UV_data = block[luma_count];
+                //double t = (double)cv::getTickCount();
 
                 for( i = 0; i < y_limit; i++, rgb_data += step, Y_data += Y_step )
                 {
@@ -995,6 +1004,8 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
                         UV_data += UV_step;
                     }
                 }
+
+                //total_cvt += (double)cv::getTickCount() - t;
             }
             else
             {
@@ -1013,17 +1024,18 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
                 const short* src_ptr = block[i & -2] + (i & 1)*8;
                 const unsigned* htable = huff_ac_tab[is_chroma];
 
+                //double t = (double)cv::getTickCount();
                 aan_fdct8x8( src_ptr, buffer, src_step, fdct_qtab[is_chroma] );
+                //total_dct += (double)cv::getTickCount() - t;
 
                 j = is_chroma + (i > luma_count);
                 val = buffer[0] - dc_pred[j];
                 dc_pred[j] = buffer[0];
                 
                 {
-                    float a = (float)val;
-                    int cat = (((int&)a >> 23) & 255) - (126 & (val ? -1 : 0));
+                    int cat = cat_table[val + CAT_TAB_SIZE];
                     
-                    CV_Assert( cat <= 11 );
+                    //CV_Assert( cat <= 11 );
                     strm.jputHuff( cat, huff_dc_tab[is_chroma] );
                     strm.jputBits( val - (val < 0 ? 1 : 0), cat );
                 }
@@ -1045,10 +1057,8 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
                         }
                         
                         {
-                            float a = (float)val;
-                            int cat = (((int&)a >> 23) & 255) - (126 & (val ? -1 : 0));
-                            
-                            CV_Assert( cat <= 10 );
+                            int cat = cat_table[val + CAT_TAB_SIZE];
+                            //CV_Assert( cat <= 10 );
                             strm.jputHuff( cat + run*16, htable );
                             strm.jputBits( val - (val < 0 ? 1 : 0), cat );
                         }
@@ -1068,6 +1078,9 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
     // Flush 
     strm.jflush();
     strm.jputShort( 0xFFD9 ); // EOI marker
+    /*printf("total dct = %.1fms, total cvt = %.1fms\n",
+           total_dct*1000./cv::getTickFrequency(),
+           total_cvt*1000./cv::getTickFrequency());*/
 }
 
 Ptr<MJpegWriter> openMJpegWriter(const std::string& filename, Size size, double fps, bool rawdata)
