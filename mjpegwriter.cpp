@@ -294,7 +294,7 @@ public:
     MJpegWriterImpl() { rawstream = false; }
     MJpegWriterImpl(const std::string& filename, Size size, double fps, int _colorspace)
     {
-        rawstream = true;
+        rawstream = false;
         open(filename, size, fps, _colorspace);
     }
     ~MJpegWriterImpl() { close(); }
