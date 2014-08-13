@@ -65,8 +65,6 @@ public:
             return false;
         m_current = m_start;
         m_pos = 0;
-        m_bit_idx = 32;
-        m_val = 0;
         return true;
     }
 
@@ -92,16 +90,8 @@ public:
         m_current = m_start;
     }
 
-    void jflush()
-    {
-        jputBits(-1, m_bit_idx & 31);
-        m_bit_idx = 32;
-        m_val = 0;
-    }
-
     size_t getPos() const
     {
-        CV_Assert( m_bit_idx == 32 );
         return (size_t)(m_current - m_start) + m_pos;
     }
 
@@ -188,53 +178,29 @@ public:
         }
     }
 
-    void jputBits(int val, int bits)
+    void jput(unsigned currval)
     {
-        int bit_idx = m_bit_idx - bits;
-        unsigned currval = m_val;
-
-        //CV_Assert(0 <= bits && bits < 32);
-        val &= bit_mask[bits];
-
-        if( bit_idx > 0 )
-        {
-            m_val = currval | (val << bit_idx);
-            m_bit_idx = bit_idx;
-        }
-        else
-        {
-            currval |= ((unsigned)val >> -bit_idx);
-            uchar v;
-            uchar* ptr = m_current;
-            v = (uchar)(currval >> 24);
-            *ptr++ = v;
-            if( v == 255 )
-                *ptr++ = 0;
-            v = (uchar)(currval >> 16);
-            *ptr++ = v;
-            if( v == 255 )
-                *ptr++ = 0;
-            v = (uchar)(currval >> 8);
-            *ptr++ = v;
-            if( v == 255 )
-                *ptr++ = 0;
-            v = (uchar)currval;
-            *ptr++ = v;
-            if( v == 255 )
-                *ptr++ = 0;
-            m_current = ptr;
-            if( m_current >= m_end )
-                writeBlock();
-            bit_idx += 32;
-            m_val = bit_idx < 32 ? (val << bit_idx) : 0;
-            m_bit_idx = bit_idx;
-        }
-    }
-
-    void jputHuff(int val, const unsigned* table)
-    {
-        unsigned code = table[val + 2];
-        jputBits(code >> 8, code & 255);
+        uchar v;
+        uchar* ptr = m_current;
+        v = (uchar)(currval >> 24);
+        *ptr++ = v;
+        if( v == 255 )
+            *ptr++ = 0;
+        v = (uchar)(currval >> 16);
+        *ptr++ = v;
+        if( v == 255 )
+            *ptr++ = 0;
+        v = (uchar)(currval >> 8);
+        *ptr++ = v;
+        if( v == 255 )
+            *ptr++ = 0;
+        v = (uchar)currval;
+        *ptr++ = v;
+        if( v == 255 )
+            *ptr++ = 0;
+        m_current = ptr;
+        if( m_current >= m_end )
+            writeBlock();
     }
 
     static bool createEncodeHuffmanTable( const int* src, unsigned* table, int max_size )
@@ -310,9 +276,6 @@ public:
     }
 
 protected:
-    int      m_bit_idx;
-    unsigned m_val;
-
     std::vector<uchar> m_buf;
     uchar*  m_start;
     uchar*  m_end;
@@ -328,10 +291,11 @@ MJpegWriter::~MJpegWriter() {}
 class MJpegWriterImpl : public MJpegWriter
 {
 public:
-    MJpegWriterImpl() {}
-    MJpegWriterImpl(const std::string& filename, Size size, double fps, bool _rawdata)
+    MJpegWriterImpl() { rawstream = false; }
+    MJpegWriterImpl(const std::string& filename, Size size, double fps, int _colorspace)
     {
-        open(filename, size, fps, _rawdata);
+        rawstream = true;
+        open(filename, size, fps, _colorspace);
     }
     ~MJpegWriterImpl() { close(); }
 
@@ -340,7 +304,7 @@ public:
         if( !strm.isOpened() )
             return;
 
-        if( !frameOffset.empty() && !rawdata )
+        if( !frameOffset.empty() && !rawstream )
         {
             endWriteChunk(); // end LIST 'movi'
             writeIndex();
@@ -353,7 +317,7 @@ public:
         frameNumIndexes.clear();
     }
 
-    bool open(const std::string& filename, Size size, double fps, bool _rawdata)
+    bool open(const std::string& filename, Size size, double fps, int _colorspace)
     {
         close();
         bool ok = strm.open(filename);
@@ -364,10 +328,12 @@ public:
         outfps = cvRound(fps);
         width = size.width;
         height = size.height;
-        quality = 2;
-        rawdata = _rawdata;
+        quality = 3;
+        rawstream = false;
+        colorspace = _colorspace;
+        channels = colorspace == COLORSPACE_GRAY ? 1 : 3;
 
-        if( !rawdata )
+        if( !rawstream )
         {
             startWriteAVI();
             writeStreamHeader();
@@ -442,9 +408,10 @@ public:
         strm.putInt(width);
         strm.putInt(height);
         strm.putShort(1); // planes (1 means interleaved data (after decompression))
-        strm.putShort(24); // bits per pixel
+
+        strm.putShort(channels); // bits per pixel
         strm.putInt(fourCC('M', 'J', 'P', 'G'));
-        strm.putInt(width * height * 3);
+        strm.putInt(width * height * channels);
         strm.putInt(0);
         strm.putInt(0);
         strm.putInt(0);
@@ -531,15 +498,32 @@ public:
 
     bool write(const Mat& img)
     {
-        CV_Assert( img.cols == width && img.rows == height );
         size_t chunkPointer = strm.getPos();
+        int input_channels = img.channels();
 
-        if( !rawdata )
+        if( colorspace == COLORSPACE_GRAY )
+        {
+            CV_Assert( img.cols == width && img.rows == height && input_channels == 1 );
+        }
+        else if( colorspace == COLORSPACE_RGBA )
+        {
+            CV_Assert( img.cols == width && img.rows == height && input_channels == 4 );
+        }
+        else if( colorspace == COLORSPACE_BGR )
+        {
+            CV_Assert( img.cols == width && img.rows == height && input_channels == 3 );
+        }
+        else if( colorspace == COLORSPACE_YUV444P )
+        {
+            CV_Assert( img.cols == width && img.rows == height*3 && input_channels == 1 );
+        }
+
+        if( !rawstream )
             startWriteChunk(fourCC('0', '0', 'd', 'c'));
 
-        writeFrameData(img.data, (int)img.step, width, height, img.channels(), quality);
+        writeFrameData(img.data, (int)img.step, width, height, input_channels);
 
-        if( !rawdata )
+        if( !rawstream )
         {
             frameOffset.push_back(chunkPointer - moviPointer);
             frameSize.push_back(strm.getPos() - chunkPointer - 8);       // Size excludes '00dc' and size field
@@ -549,15 +533,16 @@ public:
         return true;
     }
 
-    void writeFrameData( const uchar* data, int step, int width, int height, int input_channels, int quality );
+    void writeFrameData( const uchar* data, int step, int width, int height, int input_channels );
 
 protected:
     int outfps;
-    int width, height;
+    int width, height, channels;
     int quality;
     size_t moviPointer;
     std::vector<size_t> frameOffset, frameSize, AVIChunkSizeIndex, frameNumIndexes;
-    bool rawdata;
+    int colorspace;
+    bool rawstream;
 
     BitStream strm;
 };
@@ -824,8 +809,9 @@ static void aan_fdct8x8( const short *src, short *dst,
 
 
 void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
-                                      int width, int height, int input_channels, int quality )
+                                      int width, int height, int input_channels )
 {
+    //double total_cvt = 0, total_dct = 0;
     static bool init_cat_table = false;
     const int CAT_TAB_SIZE = 4096;
     static uchar cat_table[CAT_TAB_SIZE*2+1];
@@ -854,8 +840,8 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
     short fdct_qtab[2][64];
     unsigned huff_dc_tab[2][16];
     unsigned huff_ac_tab[2][256];
-    int  x_scale = input_channels > 1 ? 2 : 1, y_scale = x_scale;
-    int  channels = input_channels > 1 ? 3 : 1;
+
+    int  x_scale = channels > 1 ? 2 : 1, y_scale = x_scale;
     int  dc_pred[] = { 0, 0, 0 };
     int  x_step = x_scale * 8;
     int  y_step = y_scale * 8;
@@ -866,12 +852,13 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
     int  block_count = luma_count + channels - 1;
     int  Y_step = x_scale*8;
     const int UV_step = 16;
-    double inv_quality;
+    int u_plane_ofs = step*height;
+    int v_plane_ofs = u_plane_ofs + step*height;
 
     if( quality < 1 ) quality = 1;
     if( quality > max_quality ) quality = max_quality;
 
-    inv_quality = 1./quality;
+    double inv_quality = 1./quality;
 
     // Encode header
     strm.putBytes( (const uchar*)jpegHeader, sizeof(jpegHeader) - 1 );
@@ -895,7 +882,7 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
                 qval = 1;
             if( qval > 255 )
                 qval = 255;
-            fdct_qtab[i][idx] = cvRound((1 << (postshift + 9))/
+            fdct_qtab[i][idx] = cvRound((1 << (postshift + 11))/
                                         (qval*chroma_scale*idct_prescale[idx]));
             strm.putByte( qval );
         }
@@ -954,6 +941,24 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
 
     strm.putByte( 0 );  // successive approximation bit position
                         // high & low - (0,0) for sequental DCT
+    unsigned currval = 0, code = 0, tempval = 0;
+    int bit_idx = 32;
+
+    #define JPUT_BITS(val, bits) \
+        bit_idx -= (bits); \
+        tempval = (val) & bit_mask[(bits)]; \
+        if( bit_idx <= 0 ) \
+        {  \
+            strm.jput(currval | ((unsigned)tempval >> -bit_idx)); \
+            bit_idx += 32; \
+            currval = bit_idx < 32 ? (tempval << bit_idx) : 0; \
+        } \
+        else \
+            currval |= (tempval << bit_idx)
+
+    #define JPUT_HUFF(val, table) \
+        code = table[(val) + 2]; \
+        JPUT_BITS(code >> 8, (int)(code & 255))
 
     // encode data
     for( y = 0; y < height; y += y_step, data += y_step*step )
@@ -962,7 +967,7 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
         {
             int x_limit = x_step;
             int y_limit = y_step;
-            const uchar* rgb_data = data + x*input_channels;
+            const uchar* pix_data = data + x*input_channels;
             short* Y_data = block[0];
 
             if( x + x_limit > width ) x_limit = width - x;
@@ -975,25 +980,46 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
                 short* UV_data = block[luma_count];
                 //double t = (double)cv::getTickCount();
 
-                for( i = 0; i < y_limit; i++, rgb_data += step, Y_data += Y_step )
+                for( i = 0; i < y_limit; i++, pix_data += step, Y_data += Y_step )
                 {
-                    for( j = 0; j < x_limit; j++, rgb_data += input_channels )
+                    for( j = 0; j < x_limit; j++, pix_data += input_channels )
                     {
-                        int r = rgb_data[2];
-                        int g = rgb_data[1];
-                        int b = rgb_data[0];
+                        int Y, U, V;
 
-                        int Y = DCT_DESCALE( r*y_r + g*y_g + b*y_b, fixc - 2) - 128*4;
-                        int U = DCT_DESCALE( r*cb_r + g*cb_g + b*cb_b, fixc - 2 );
-                        int V = DCT_DESCALE( r*cr_r + g*cr_g + b*cr_b, fixc - 2 );
+                        if( colorspace == COLORSPACE_BGR )
+                        {
+                            int r = pix_data[2];
+                            int g = pix_data[1];
+                            int b = pix_data[0];
+
+                            Y = DCT_DESCALE( r*y_r + g*y_g + b*y_b, fixc) - 128;
+                            U = DCT_DESCALE( r*cb_r + g*cb_g + b*cb_b, fixc );
+                            V = DCT_DESCALE( r*cr_r + g*cr_g + b*cr_b, fixc );
+                        }
+                        else if( colorspace == COLORSPACE_RGBA )
+                        {
+                            int r = pix_data[0];
+                            int g = pix_data[1];
+                            int b = pix_data[2];
+
+                            Y = DCT_DESCALE( r*y_r + g*y_g + b*y_b, fixc) - 128;
+                            U = DCT_DESCALE( r*cb_r + g*cb_g + b*cb_b, fixc );
+                            V = DCT_DESCALE( r*cr_r + g*cr_g + b*cr_b, fixc );
+                        }
+                        else
+                        {
+                            Y = pix_data[0] - 128;
+                            U = pix_data[v_plane_ofs] - 128;
+                            V = pix_data[u_plane_ofs] - 128;
+                        }
+
                         int j2 = j >> (x_scale - 1);
-
                         Y_data[j] = (short)Y;
                         UV_data[j2] = (short)(UV_data[j2] + U);
                         UV_data[j2 + 8] = (short)(UV_data[j2 + 8] + V);
                     }
 
-                    rgb_data -= x_limit*input_channels;
+                    pix_data -= x_limit*input_channels;
                     if( ((i+1) & (y_scale - 1)) == 0 )
                     {
                         UV_data += UV_step;
@@ -1004,10 +1030,10 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
             }
             else
             {
-                for( i = 0; i < y_limit; i++, rgb_data += step, Y_data += Y_step )
+                for( i = 0; i < y_limit; i++, pix_data += step, Y_data += Y_step )
                 {
                     for( j = 0; j < x_limit; j++ )
-                        Y_data[j] = (short)(rgb_data[j]*4 - 128*4);
+                        Y_data[j] = (short)(pix_data[j]*4 - 128*4);
                 }
             }
 
@@ -1031,8 +1057,8 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
                     int cat = cat_table[val + CAT_TAB_SIZE];
                     
                     //CV_Assert( cat <= 11 );
-                    strm.jputHuff( cat, huff_dc_tab[is_chroma] );
-                    strm.jputBits( val - (val < 0 ? 1 : 0), cat );
+                    JPUT_HUFF( cat, huff_dc_tab[is_chroma] );
+                    JPUT_BITS( val - (val < 0 ? 1 : 0), cat );
                 }
                 
                 for( j = 1; j < 64; j++ )
@@ -1047,15 +1073,15 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
                     {
                         while( run >= 16 )
                         {
-                            strm.jputHuff( 0xF0, htable ); // encode 16 zeros
+                            JPUT_HUFF( 0xF0, htable ); // encode 16 zeros
                             run -= 16;
                         }
                         
                         {
                             int cat = cat_table[val + CAT_TAB_SIZE];
                             //CV_Assert( cat <= 10 );
-                            strm.jputHuff( cat + run*16, htable );
-                            strm.jputBits( val - (val < 0 ? 1 : 0), cat );
+                            JPUT_HUFF( cat + run*16, htable );
+                            JPUT_BITS( val - (val < 0 ? 1 : 0), cat );
                         }
                         
                         run = 0;
@@ -1064,23 +1090,23 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
                 
                 if( run )
                 {
-                    strm.jputHuff( 0x00, htable ); // encode EOB
+                    JPUT_HUFF( 0x00, htable ); // encode EOB
                 }
             }
         }
     }
     
-    // Flush 
-    strm.jflush();
+    // Flush
+    JPUT_BITS((unsigned)-1, bit_idx & 31);
     strm.jputShort( 0xFFD9 ); // EOI marker
     /*printf("total dct = %.1fms, total cvt = %.1fms\n",
            total_dct*1000./cv::getTickFrequency(),
            total_cvt*1000./cv::getTickFrequency());*/
 }
 
-Ptr<MJpegWriter> openMJpegWriter(const std::string& filename, Size size, double fps, bool rawdata)
+Ptr<MJpegWriter> openMJpegWriter(const std::string& filename, Size size, double fps, int colorspace)
 {
-    Ptr<MJpegWriter> mjcodec = new MJpegWriterImpl(filename, size, fps, rawdata);
+    Ptr<MJpegWriter> mjcodec = new MJpegWriterImpl(filename, size, fps, colorspace);
     if( mjcodec->isOpened() )
         return mjcodec;
     return Ptr<MJpegWriter>();
