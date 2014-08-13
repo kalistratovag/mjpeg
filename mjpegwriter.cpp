@@ -877,7 +877,7 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
         for( j = 0; j < 64; j++ )
         {
             int idx = zigzag[j];
-            int qval = cvRound(qtable[idx]*inv_quality);
+            int qval = cvRound(qtable[idx]*inv_quality*(idx/8+1));
             if( qval < 1 )
                 qval = 1;
             if( qval > 255 )
