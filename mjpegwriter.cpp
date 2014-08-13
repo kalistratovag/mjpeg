@@ -222,7 +222,7 @@ public:
             if( m_current >= m_end )
                 writeBlock();
             bit_idx += 32;
-            m_val = val << bit_idx;
+            m_val = bit_idx < 32 ? (val << bit_idx) : 0;
             m_bit_idx = bit_idx;
         }
     }
@@ -498,13 +498,14 @@ public:
 
     void endWriteChunk()
     {
-        CV_Assert( !AVIChunkSizeIndex.empty() );
-
-        size_t currpos = strm.getPos();
-        size_t pospos = AVIChunkSizeIndex.back();
-        AVIChunkSizeIndex.pop_back();
-        int chunksz = (int)(currpos - (pospos + 4));
-        strm.patchInt(chunksz, pospos);
+        if( !AVIChunkSizeIndex.empty() )
+        {
+            size_t currpos = strm.getPos();
+            size_t pospos = AVIChunkSizeIndex.back();
+            AVIChunkSizeIndex.pop_back();
+            int chunksz = (int)(currpos - (pospos + 4));
+            strm.patchInt(chunksz, pospos);
+        }
     }
 
     void writeIndex()
@@ -727,10 +728,10 @@ static const char jpegHeader[] =
 "\x00\x00"; // width & height of thumbnail: ( 0x0 means no thumbnail)
 
 // FDCT with postscaling
-static void aan_fdct8x8( int *src, int *dst,
-                        int step, const int *postscale )
+static void aan_fdct8x8( const short *src, short *dst,
+                         int step, const short *postscale )
 {
-    int  workspace[64], *work = workspace;
+    short  workspace[64], *work = workspace;
     int  i;
 
     // Pass 1: process rows
@@ -846,17 +847,18 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
     //     encode block.
     int x, y;
     int i, j;
-    const int max_quality = 12;
+    const int max_quality = 7;
     int   quality = max_quality;
-    int   fdct_qtab[2][64];
+    short fdct_qtab[2][64];
     unsigned huff_dc_tab[2][16];
     unsigned huff_ac_tab[2][256];
     int  x_scale = channels > 1 ? 2 : 1, y_scale = x_scale;
     int  dc_pred[] = { 0, 0, 0 };
     int  x_step = x_scale * 8;
     int  y_step = y_scale * 8;
-    int  block[6][64];
-    int  buffer[1024];
+    short  block[6][64];
+    short  buffer[2048];
+    int*   hbuffer = (int*)buffer;
     int  luma_count = x_scale*y_scale;
     int  block_count = luma_count + channels - 1;
     int  Y_step = x_scale*8;
@@ -911,7 +913,7 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
         strm.putBytes( htable, tableSize ); // put table
 
         BitStream::createEncodeHuffmanTable( BitStream::createSourceHuffmanTable(
-                            htable, buffer, 16, 9 ), is_ac_tab ? huff_ac_tab[idx] :
+                            htable, hbuffer, 16, 9 ), is_ac_tab ? huff_ac_tab[idx] :
                             huff_dc_tab[idx], is_ac_tab ? 256 : 16 );
     }
 
@@ -958,7 +960,7 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
             int x_limit = x_step;
             int y_limit = y_step;
             const uchar* rgb_data = data + x*input_channels;
-            int* Y_data = block[0];
+            short* Y_data = block[0];
 
             if( x + x_limit > width ) x_limit = width - x;
             if( y + y_limit > height ) y_limit = height - y;
@@ -967,7 +969,7 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
 
             if( channels > 1 )
             {
-                int* UV_data = block[luma_count];
+                short* UV_data = block[luma_count];
 
                 for( i = 0; i < y_limit; i++, rgb_data += step, Y_data += Y_step )
                 {
@@ -982,9 +984,9 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
                         int V = DCT_DESCALE( r*cr_r + g*cr_g + b*cr_b, fixc - 2 );
                         int j2 = j >> (x_scale - 1);
 
-                        Y_data[j] = Y;
-                        UV_data[j2] += U;
-                        UV_data[j2 + 8] += V;
+                        Y_data[j] = (short)Y;
+                        UV_data[j2] = (short)(UV_data[j2] + U);
+                        UV_data[j2 + 8] = (short)(UV_data[j2 + 8] + V);
                     }
 
                     rgb_data -= x_limit*input_channels;
@@ -1008,7 +1010,7 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
                 int is_chroma = i >= luma_count;
                 int src_step = x_scale * 8;
                 int run = 0, val;
-                int* src_ptr = block[i & -2] + (i & 1)*8;
+                const short* src_ptr = block[i & -2] + (i & 1)*8;
                 const unsigned* htable = huff_ac_tab[is_chroma];
 
                 aan_fdct8x8( src_ptr, buffer, src_step, fdct_qtab[is_chroma] );

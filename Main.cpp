@@ -11,12 +11,10 @@ int main(int argc, char** argv)
 	Mat img = imread(argv[1], 1);
     Mat img_yuv, img_yuv444p;
     Rect rect(0, 0, img.cols, img.rows);
-    int nframes = 1;
-    Ptr<cv::mjpeg::MJpegWriter> codec = cv::mjpeg::openMJpegWriter(argv[2], img.size(), 30, true);
+    int nframes = 10;
+    Ptr<cv::mjpeg::MJpegWriter> codec = cv::mjpeg::openMJpegWriter(argv[2], img.size(), 30, false);
     VideoWriter outputVideo;
     
-    double ttotal = 0;
-
     /*cvtColor(img, img_yuv, COLOR_BGR2YUV);
     img_yuv444p.create(img.rows * 3 , img.cols, CV_8U);
     Mat planes[] =
@@ -27,7 +25,9 @@ int main(int argc, char** argv)
     };
     split(img_yuv, planes);*/
 
-	/*for (int i = 0; i < nframes; i++)
+    double ttotal = 0;
+
+	for (int i = 0; i < nframes; i++)
 	{
         double tstart = (double)getTickCount();
         codec->write(img);
@@ -38,13 +38,13 @@ int main(int argc, char** argv)
         fflush(stdout);
 	}
 
-    codec.release();*/
-    codec->write(img);
-    //cv::jpeg::writeJpeg(argv[2], img);
+    codec.release();
+    //codec->write(img);
+    //cv::jpeg::writeJpeg("out0.jpg", img);
     printf("time per frame (including file i/o)=%.1fms\n", (double)ttotal*1000./getTickFrequency()/nframes);
-    Mat img2 = cv::jpeg::readJpeg(argv[2]);
-    imshow("test", img2);
-    waitKey();
+    //Mat img2 = cv::jpeg::readJpeg(argv[2]);
+    //imshow("test", img2);
+    //waitKey();
 
 	return 0;
 }

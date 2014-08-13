@@ -296,7 +296,7 @@ protected:
 };
 
 
-#define  BS_DEF_BLOCK_SIZE   (1<<15)
+#define  BS_DEF_BLOCK_SIZE   (1<<10)
 
 // WBaseStream - base class for output streams
 class WBaseStream
@@ -2379,7 +2379,6 @@ void  WJpegBitStream::WriteBlock()
     uchar* ptr = m_start;
     if( !bsIsBigEndian() )
         bsBSwapBlock( m_start, m_current );
-    putchar('*');
 
     while( ptr < m_current )
     {
