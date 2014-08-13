@@ -1,6 +1,6 @@
 #include "mjpegwriter.hpp"
 #include "opencv2/core/core.hpp"
-#include "opencv2/core/utility.hpp"
+//#include "opencv2/core/utility.hpp"
 #include <vector>
 
 namespace cv
@@ -38,17 +38,18 @@ class BitStream
 public:
     enum
     {
-        DEFAULT_BLOCK_SIZE = (1 << 10),
+        DEFAULT_BLOCK_SIZE = (1 << 15),
         huff_val_shift = 20,
         huff_code_mask = (1 << huff_val_shift) - 1
     };
 
     BitStream()
     {
-        m_buf.resize(DEFAULT_BLOCK_SIZE + 256);
+        m_buf.resize(DEFAULT_BLOCK_SIZE + 1024);
         m_start = &m_buf[0];
         m_end = m_start + DEFAULT_BLOCK_SIZE;
         m_is_opened = false;
+        m_f = 0;
     }
 
     ~BitStream()
@@ -115,6 +116,8 @@ public:
     {
         uchar* data = (uchar*)buf;
         CV_Assert(m_f && data && m_current && count >= 0);
+        if( m_current >= m_end )
+            writeBlock();
 
         while( count )
         {
@@ -259,7 +262,7 @@ public:
 
         if( size > max_size )
         {
-            CV_Error(Error::StsOutOfRange, "too big maximum Huffman code size");
+            CV_Error(CV_StsOutOfRange, "too big maximum Huffman code size");
             return false;
         }
 
@@ -337,14 +340,13 @@ public:
         if( !strm.isOpened() )
             return;
 
-        if( nframes > 0 && !rawdata )
+        if( !frameOffset.empty() && !rawdata )
         {
             endWriteChunk(); // end LIST 'movi'
             writeIndex();
             finishWriteAVI();
         }
         strm.close();
-        nframes = 0;
         frameOffset.clear();
         frameSize.clear();
         AVIChunkSizeIndex.clear();
@@ -362,10 +364,7 @@ public:
         outfps = cvRound(fps);
         width = size.width;
         height = size.height;
-        channels = 3;
-        nchunks = 10;
-        quality = 80;
-        nframes = 0;
+        quality = 2;
         rawdata = _rawdata;
 
         if( !rawdata )
@@ -483,8 +482,8 @@ public:
 
     void startWriteChunk(int fourcc)
     {
-        if (fourcc != 0)
-            strm.putInt(fourcc);
+        CV_Assert(fourcc != 0);
+        strm.putInt(fourcc);
 
         AVIChunkSizeIndex.push_back(strm.getPos());
         strm.putInt(0);
@@ -506,6 +505,7 @@ public:
     {
         // old style AVI index. Must be Open-DML index
         startWriteChunk(fourCC('i', 'd', 'x', '1'));
+        int nframes = (int)frameOffset.size();
         for( int i = 0; i < nframes; i++ )
         {
             strm.putInt(fourCC('0', '0', 'd', 'c'));
@@ -518,6 +518,7 @@ public:
 
     void finishWriteAVI()
     {
+        int nframes = (int)frameOffset.size();
         // Record frames numbers to AVI Header
         while (!frameNumIndexes.empty())
         {
@@ -536,8 +537,7 @@ public:
         if( !rawdata )
             startWriteChunk(fourCC('0', '0', 'd', 'c'));
 
-        writeFrameData(img.data, (int)img.step, width, height, img.channels());
-        nframes++;
+        writeFrameData(img.data, (int)img.step, width, height, img.channels(), quality);
 
         if( !rawdata )
         {
@@ -549,17 +549,12 @@ public:
         return true;
     }
 
-    void writeFrameData( const uchar* data, int step, int width, int height, int input_channels );
+    void writeFrameData( const uchar* data, int step, int width, int height, int input_channels, int quality );
 
 protected:
-    int nchunks;
-    int outformat;
-    int quality;
     int outfps;
     int width, height;
-    int channels;
-    int type;
-    int nframes;
+    int quality;
     size_t moviPointer;
     std::vector<size_t> frameOffset, frameSize, AVIChunkSizeIndex, frameNumIndexes;
     bool rawdata;
@@ -829,14 +824,14 @@ static void aan_fdct8x8( const short *src, short *dst,
 
 
 void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
-                                      int width, int height, int input_channels )
+                                      int width, int height, int input_channels, int quality )
 {
     static bool init_cat_table = false;
     const int CAT_TAB_SIZE = 4096;
     static uchar cat_table[CAT_TAB_SIZE*2+1];
     if( !init_cat_table )
     {
-        for( int i = -CAT_TAB_SIZE; i < CAT_TAB_SIZE; i++ )
+        for( int i = -CAT_TAB_SIZE; i <= CAT_TAB_SIZE; i++ )
         {
             float a = (float)i;
             cat_table[i+CAT_TAB_SIZE] = (((int&)a >> 23) & 255) - (126 & (i ? -1 : 0));
@@ -856,16 +851,16 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
     int x, y;
     int i, j;
     const int max_quality = 12;
-    int   quality = 2;
     short fdct_qtab[2][64];
     unsigned huff_dc_tab[2][16];
     unsigned huff_ac_tab[2][256];
-    int  x_scale = channels > 1 ? 2 : 1, y_scale = x_scale;
+    int  x_scale = input_channels > 1 ? 2 : 1, y_scale = x_scale;
+    int  channels = input_channels > 1 ? 3 : 1;
     int  dc_pred[] = { 0, 0, 0 };
     int  x_step = x_scale * 8;
     int  y_step = y_scale * 8;
     short  block[6][64];
-    short  buffer[2048];
+    short  buffer[4096];
     int*   hbuffer = (int*)buffer;
     int  luma_count = x_scale*y_scale;
     int  block_count = luma_count + channels - 1;
@@ -1012,7 +1007,7 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
                 for( i = 0; i < y_limit; i++, rgb_data += step, Y_data += Y_step )
                 {
                     for( j = 0; j < x_limit; j++ )
-                        Y_data[j] = rgb_data[j]*4 - 128*4;
+                        Y_data[j] = (short)(rgb_data[j]*4 - 128*4);
                 }
             }
 
@@ -1085,7 +1080,7 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
 
 Ptr<MJpegWriter> openMJpegWriter(const std::string& filename, Size size, double fps, bool rawdata)
 {
-    Ptr<MJpegWriter> mjcodec = makePtr<MJpegWriterImpl>(filename, size, fps, rawdata);
+    Ptr<MJpegWriter> mjcodec = new MJpegWriterImpl(filename, size, fps, rawdata);
     if( mjcodec->isOpened() )
         return mjcodec;
     return Ptr<MJpegWriter>();

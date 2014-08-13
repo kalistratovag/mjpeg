@@ -1,6 +1,7 @@
-#include <opencv2/core/utility.hpp>
+#include <opencv2/core/core.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/highgui/highgui.hpp>
+#include <string>
 #include "mjpegwriter.hpp"
 
 using namespace cv;
@@ -8,11 +9,11 @@ using namespace std;
 
 int main(int argc, char** argv)
 {
-	Mat img = imread(argv[1], 1);
+	Mat img = imread(std::string(argv[1]), 1);
     Mat img_yuv, img_yuv444p;
     Rect rect(0, 0, img.cols, img.rows);
     int nframes = 10;
-    Ptr<cv::mjpeg::MJpegWriter> codec = cv::mjpeg::openMJpegWriter(argv[2], img.size(), 30, false);
+    Ptr<cv::mjpeg::MJpegWriter> codec = cv::mjpeg::openMJpegWriter(std::string(argv[2]), img.size(), 30, false);
     VideoWriter outputVideo;
     
     /*cvtColor(img, img_yuv, COLOR_BGR2YUV);
