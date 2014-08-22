@@ -1102,6 +1102,10 @@ void MJpegWriterImpl::writeFrameData( const uchar* data, int step,
     /*printf("total dct = %.1fms, total cvt = %.1fms\n",
            total_dct*1000./cv::getTickFrequency(),
            total_cvt*1000./cv::getTickFrequency());*/
+    size_t pos = strm.getPos();
+    size_t pos1 = (pos + 3) & ~3;
+    for( ; pos < pos1; pos++ )
+        strm.putByte(0);
 }
 
 Ptr<MJpegWriter> openMJpegWriter(const std::string& filename, Size size, double fps, int colorspace)
