@@ -3,6 +3,7 @@
 #include <opencv2/highgui/highgui.hpp>
 #include <string>
 #include "mjpegwriter.hpp"
+#include "mjpegreader.hpp"
 
 using namespace cv;
 using namespace cv::mjpeg;
@@ -10,7 +11,7 @@ using namespace std;
 
 int main(int argc, char** argv)
 {
-	Mat img = imread(std::string(argv[1]), 1);
+	Mat img = cv::jpeg::readJpeg(std::string(argv[1]));//imread(std::string(argv[1]), 1);
     Mat img_yuv, img_yuv444p;
     Rect rect(0, 0, img.cols, img.rows);
     int nframes = 10;
@@ -52,6 +53,8 @@ int main(int argc, char** argv)
     //codec->write(img);
     //cv::jpeg::writeJpeg("out0.jpg", img);
     printf("\nmedian time per frame (including file i/o)=%.1fms\n", (double)tvec[tvec.size()/2]*1000./getTickFrequency());
+
+    cv::mjpeg::openMJpegReader(std::string(argv[2]), img.size(), 30, colorspace);
     //Mat img2 = cv::jpeg::readJpeg(argv[2]);
     //imshow("test", img2);
     //waitKey();
